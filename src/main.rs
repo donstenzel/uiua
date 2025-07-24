@@ -27,9 +27,11 @@ use uiua::{
     format::{format_file, format_str, FormatConfig, FormatConfigSource},
     lex,
     lsp::BindingDocsKind,
-    parse, print_stack, Assembly, CodeSpan, Compiler, NativeSys, PreEvalMode, PrimClass, PrimDoc,
-    PrimDocFragment, PrimDocLine, Primitive, RunMode, SafeSys, SpanKind, Spans, Subscript, Token,
-    Uiua, UiuaError, UiuaErrorKind, UiuaResult, CONSTANTS,
+    parse,
+    parse::{Expectation, ParseError},
+    print_stack, AsciiToken, Assembly, CodeSpan, Compiler, NativeSys, PreEvalMode, PrimClass,
+    PrimDoc, PrimDocFragment, PrimDocLine, Primitive, RunMode, SafeSys, SpanKind, Spans, Subscript,
+    Token, Uiua, UiuaError, UiuaErrorKind, UiuaResult, CONSTANTS,
 };
 
 static PRESSED_CTRL_C: AtomicBool = AtomicBool::new(false);
@@ -1150,8 +1152,10 @@ fn repl(mut env: Uiua, mut compiler: Compiler, color: bool, stack: bool, config:
         env!("CARGO_PKG_VERSION")
     );
     let mut line_reader = DefaultEditor::new().expect("Failed to read from Stdin");
+    let mut prompt = "    ";
+    let mut buffer = String::new();
     loop {
-        let mut code = match line_reader.readline("    ") {
+        let line = match line_reader.readline(prompt) {
             Ok(code) => {
                 match code.trim() {
                     "help" => {
@@ -1170,53 +1174,79 @@ fn repl(mut env: Uiua, mut compiler: Compiler, color: bool, stack: bool, config:
                         continue;
                     }
                     "exit" => break,
-                    _ => {}
+                    "" => continue,
+                    _ => buffer.push_str(&code),
                 }
                 code
             }
             Err(ReadlineError::Eof | ReadlineError::Interrupted) => break,
             Err(_) => panic!("Failed to read from Stdin"),
         };
-        if code.is_empty() {
-            continue;
-        }
 
-        match format_str(&code, &config) {
+        match format_str(&buffer, &config) {
             Ok(formatted) => {
-                code = formatted.output;
-                _ = line_reader.add_history_entry(&code);
+                buffer = formatted.output;
+                _ = line_reader.add_history_entry(&buffer);
+
+                let backup_comp = compiler.clone();
+                let backup_stack = env.stack().to_vec();
+                let res = compiler.load_str(&buffer).map(drop);
+                for line in color_code(&buffer, &compiler).lines() {
+                    println!("    {}", line);
+                }
+                let res = res.and_then(|()| env.run_compiler(&mut compiler));
+
+                match res {
+                    Ok(()) => {
+                        print_stack(env.stack(), color);
+                        if !stack {
+                            env.take_stack();
+                        }
+                    }
+                    Err(e) => {
+                        compiler = backup_comp;
+                        env.take_stack();
+                        for val in backup_stack {
+                            env.push(val);
+                        }
+                        eprintln!("{}", e.report());
+                        print_stack(env.stack(), color);
+                    }
+                }
+                compiler.assembly_mut().root.clear();
+                buffer.clear();
+                prompt = "    ";
             }
             Err(e) => {
-                _ = line_reader.add_history_entry(&code);
+                _ = line_reader.add_history_entry(&line);
+                if let UiuaErrorKind::Parse(errors, _) = &*e.kind {
+                    // all errors must be unclosed parens/brackets/curlies,
+                    // with nothing found, to trigger multiline input
+                    if errors.iter().all(|err| {
+                        matches!(
+                        &err.value,
+                        ParseError::Expected(expects, None) if {
+                            expects.iter().any(|exp|
+                                matches!(
+                                exp,
+                                Expectation::Token(Token::Simple(
+                                    AsciiToken::CloseBracket
+                                        | AsciiToken::CloseParen
+                                        | AsciiToken::CloseCurly
+                                )))
+                            )
+                        })
+                    }) {
+                        buffer.push_str("\n");
+                        prompt = "*   ";
+                        continue;
+                    }
+                }
                 eprintln!("{}", e.report());
-                continue;
+                buffer.clear();
+                prompt = "    ";
             }
         }
-
-        let backup_comp = compiler.clone();
-        let backup_stack = env.stack().to_vec();
-        let res = compiler.load_str(&code).map(drop);
-        println!("    {}", color_code(&code, &compiler));
-        let res = res.and_then(|()| env.run_compiler(&mut compiler));
-
-        match res {
-            Ok(()) => {
-                print_stack(env.stack(), color);
-                if !stack {
-                    env.take_stack();
-                }
-            }
-            Err(e) => {
-                compiler = backup_comp;
-                env.take_stack();
-                for val in backup_stack {
-                    env.push(val);
-                }
-                eprintln!("{}", e.report());
-                print_stack(env.stack(), color);
-            }
-        }
-        compiler.assembly_mut().root.clear();
     }
 }
 
