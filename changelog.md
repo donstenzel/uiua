@@ -46,6 +46,7 @@ This version is not yet released. If you are reading this on the website, then t
 - Improve "Array would be too large" error messages
 - Change short form of the `--experimental` flag for `uiua eval` to use `-x` instead of `-e`
   - This is consistent with the corresponding flag for `uiua repl`
+- Allow multiline input inside `uiua repl` when parentheses `()`, brackets `[]` or curlies `{}` are not closed
 ### Pad
 - Add `primitives.json` to the pre-included files in the pad
 
