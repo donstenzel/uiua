@@ -1237,7 +1237,7 @@ fn repl(mut env: Uiua, mut compiler: Compiler, color: bool, stack: bool, config:
                             )
                         })
                     }) {
-                        buffer.push_str("\n");
+                        buffer.push('\n');
                         prompt = "*   ";
                         continue;
                     }
